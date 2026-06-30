@@ -1,0 +1,348 @@
+---
+title: "Predicting Customer's Loan decision by Logistic Regression"
+author: "Gibson Gnanasehar - Student ID: "
+format: 
+  pdf: 
+    geometry:
+      - top=14mm
+      - left=15mm
+      - right=15mm
+      - bottom=12mm
+      - heightrounded
+    colorlinks: true
+    papersize: a4
+    fontsize: 11pt
+    mainfont: Times New Roman
+    sansfont: Times New Roman
+    align: justify
+    include-in-header:
+      text: |
+        \usepackage{titling}
+        \usepackage{tikz}
+        \usetikzlibrary{calc}
+        \usepackage{tikzpagenodes}
+        \usepackage{atbegshi}
+        \usepackage{setspace}
+        \usepackage{fancyhdr} % enable custom headers/footers
+        \usepackage{wrapfig} % ADDED for wrapping
+        \usepackage{float} % ADDED for fixed placement
+        \usepackage{caption}
+        \usepackage{subcaption} % ADDED for side-by-side layout
+        \onehalfspacing
+        \pagestyle{fancy}
+        \fancyhf{} % clear default header/footer
+        \fancyhead[R]{\thepage} % page number on top right
+        \renewcommand{\headrulewidth}{0pt} % no header line
+        % Adjusting title position and font size
+        \pretitle{%
+          \begin{center}
+          \vspace*{-2cm}
+          \fontsize{14pt}{16pt}\selectfont\bfseries
+        }
+        \posttitle{\par\end{center}\vspace*{-0.75cm}}
+        % Adjusting author position and font size
+        \preauthor{%
+          \begin{center}
+          \fontsize{11pt}{13pt}\selectfont
+        }
+        \postauthor{\end{center}\vspace*{-2.25cm}}
+        % Page border
+        \AtBeginShipout{\AtBeginShipoutAddToBox{%
+          \begin{tikzpicture}[remember picture,overlay]
+            \draw[line width=0.5pt]
+              ($(current page.north west)+(1cm,-1cm)$) rectangle
+              ($(current page.south east)+(-1cm,1cm)$);
+          \end{tikzpicture}%
+        }}
+editor:
+  markdown:
+    wrap: 72
+editor_options:
+  chunk_output_type: console
+execute:
+  warning: false
+  message: false
+  echo: false
+---
+
+```{r, include=FALSE}
+# install.packages('tidyverse')
+# install.packages('dplyr')
+# install.packages('ggplot2')
+# install.packages('tibble')
+# install.packages('stringr')
+# install.packages('tinytex')
+# install.packages('broom')
+# install.packages('kableExtra')
+# install.packages('GGally')
+# install.packages('cowplot')
+# install.packages('knitr')
+# tinytex::tlmgr_install("wrapfig")
+# install.packages("webshot2")
+# webshot2::install_phantomjs()
+```
+
+```{r setup, include=FALSE}
+# Load required libraries
+library(tidymodels)
+library(ggplot2)
+library(readr)
+library(skimr)
+library(kableExtra)
+library(tidyverse)
+library(dplyr)
+library(tibble)
+library(stringr)
+library(tinytex)
+library(broom)
+library(GGally)
+library(cowplot)
+library(knitr)
+library(webshot2)
+```
+
+## Introduction
+
+This report studies the factors influencing personal loan acceptance
+using a logistic regression model. The model is performed on a random
+sample of 500 observations drawn from the *bankloan.csv* dataset. The
+binary outcome variable is *personal_loan* (Yes/No), and key predictors
+include *Income*, *Family*, *Education*, *CD Account*, and *CreditCard*
+usage. The objective is to identify customer attributes that
+significantly influence loan uptake, enabling data-driven targeting and
+credit risk assessment in banking.
+
+### Data Preparation
+
+A fixed random seed ensured reproducibility during sampling. Missing
+data were excluded, and categorical variables such as *Education*, *CD
+Account*, and *CreditCard* were converted to factor type. The target
+variable was relabeled for interpretability. Only predictors relevant to
+the loan decision were retained.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+id <- 
+set.seed(id)
+all_data <- read_csv("bankloan.csv")
+data_sample <- all_data |> slice_sample(n = 500)
+
+# Clean and select variables
+clean_data <- data_sample |>
+  select(personal_loan, Income, Family, Education, `CD Account`, CreditCard) |>
+  na.omit() |>
+  mutate(
+    personal_loan = factor(personal_loan, levels = c(0, 1), labels = c("No", "Yes")),
+    `CD Account` = factor(`CD Account`),
+    CreditCard = factor(CreditCard),
+    Education = factor(Education),
+    Family = as.integer(Family)
+  )
+```
+
+## Data Visualization
+
+*Figure 1* demonstrates that customers who accepted personal loans
+exhibited significantly higher income levels compared to those who did
+not, indicating income as a key predictive factor.
+
+```{r, echo=FALSE}
+fig1 <- ggplot(clean_data, aes(x = personal_loan, y = Income)) +
+  geom_boxplot(fill = "lightblue") +
+  labs(x = "Personal Loan", y = "Income") +
+  theme_minimal(base_size = 8) +
+  theme(axis.title = element_text(size = 11), axis.text = element_text(size = 10)
+  )
+ggsave("fig1.pdf", fig1, width = 5, height = 3)
+```
+
+```{r, echo=FALSE}
+fig2 <- ggplot(clean_data, aes(x = `CD Account`, fill = personal_loan)) +
+  geom_bar(position = "fill") +
+  labs(x = "CD Account", y = "Proportion") +
+  theme_minimal(base_size = 8) +
+  theme(axis.title = element_text(size = 11), axis.text = element_text(size = 10)
+  )
+
+ggsave("fig2.pdf", fig2, width = 5, height = 3)
+
+```
+
+A larger proportion of customers with CD accounts accepted loans as
+illustrated in *Figure 2*, suggesting a strong relationship between
+existing product engagement and loan uptake.
+
+```{=latex}
+\noindent
+\makebox[0.45\textwidth][l]{\textbf{Figure 1: Income by Loan Status}}%
+\hfill
+\makebox[0.45\textwidth][r]{\textbf{Figure 2: CD Account Ownership by Loan Status}}
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}[b]{0.45\textwidth}
+\includegraphics[width=\textwidth]{fig1.pdf}
+\end{subfigure}\hfill
+\begin{subfigure}[b]{0.45\textwidth}
+\includegraphics[width=\textwidth]{fig2.pdf}
+\end{subfigure}
+\end{figure}
+```
+
+**Table 1: Mean Income by Loan Status and CD Account**
+
+```{r}
+summary_table <- clean_data |> 
+  group_by(personal_loan, `CD Account`) |> 
+  summarise(Mean_Income = mean(Income), .groups = 'drop')
+
+table1 <- summary_table |>
+  kable(format = "latex", booktabs = TRUE, align = "l") |>  # "l" = left alignment
+  kable_styling(font_size = 10, position = "left", latex_options = "hold_position")
+
+table1
+```
+
+*Table 1* confirmed that mean income among acceptors was nearly double
+that of non-acceptors, regardless of CD account ownership, highlighting
+both variables as key influencers.
+
+```{r}
+# Fit the logistic regression model globally (outside layout blocks)
+set.seed(123)
+data_split <- initial_split(clean_data, prop = 0.7)
+train_data <- training(data_split)
+test_data <- testing(data_split)
+
+model_rec <- recipe(personal_loan ~ Income + Family + Education + `CD Account` + CreditCard, data = train_data)
+log_reg <- logistic_reg() |> set_engine("glm")
+model_wflow <- workflow() |> add_model(log_reg) |> add_recipe(model_rec)
+model_fit <- model_wflow |> fit(data = train_data)
+
+```
+
+**Logistic Regression Model**
+
+A logistic regression model was considered due to the binary nature of
+the outcome. The model included five predictors: *Income*, *Family*,
+*Education*, *CD Account*, and *CreditCard*.
+
+*Table 2* presents the regression coefficients, standard errors, test
+statistics, and p-values for each predictor.
+
+**Table 2: Logistic Regression Coefficients**
+
+```{r}
+# Table 2: Logistic Regression Coefficients
+coeff_table <- model_fit |> 
+  extract_fit_parsnip() |> 
+  tidy()
+
+coeff_table |>
+  kable(format = "latex", booktabs = TRUE, align = "l") |>  # left-align all columns
+  kable_styling(font_size = 10, position = "left", latex_options = "hold_position")
+```
+
+As shown in Table 2, *Income* (β = 0.0605, *p* \< .001) and *Family*
+size (β = 0.6024, *p* = .0029) had significant positive effects,
+indicating higher chances of loan acceptance among wealthier individuals
+and larger families. Education levels also mattered: those with a higher
+education were significantly more likely to accept loans (*p* \< .001).
+*CD Account* ownership had the strongest effect (β = 3.22, *p* \< .001),
+reflecting deeper financial engagement. *CreditCard* ownership showed a
+negative but statistically insignificant effect on loan acceptance.
+However, from a behavioral perspective, customers who actively use
+credit cards may exhibit a borrowing nature and thus be more inclined
+towards loans. The model's intercept (β = –10.41) represents the low
+probability when all predictors are at the base level.
+
+## Model Performance
+
+The logistic regression model was applied on the 30% test set to assess
+how well it predicts loan acceptance.
+
+```{r, echo=FALSE}
+predictions <- augment(model_fit, test_data)
+```
+
+**Table 3: Confusion Matrix**
+
+```{r}
+# Confusion matrix and its formatted version
+confusion_tbl <- conf_mat(predictions, truth = personal_loan, estimate = .pred_class)
+```
+
+```{r}
+conf_mat_df <- as.data.frame.matrix(confusion_tbl$table)
+
+knitr::kable(
+  conf_mat_df,
+  format = "latex",
+  booktabs = TRUE,
+  align = rep("l", ncol(conf_mat_df) + 1)  # +1 for row names if included
+) |>
+  kableExtra::kable_styling(
+    position = "left",                      # Aligns full table block to left
+    latex_options = c("hold_position", "scale_down"),
+    font_size = 10
+  )
+```
+
+The confusion matrix results shown in *Table 3* highlight strong
+classification performance. The model correctly identified 50 loan
+acceptors (true positives) and 85 non-acceptors (true negatives).
+
+The model correctly classified 90% of all cases, indicating high overall
+predictive
+performance. Sensitivity (Recall) = 0.847: About 84.7% of actual loan
+acceptors
+were correctly identified. Specificity = 0.934: Around 93.4% of
+non-acceptors were accurately predicted, indicating very low false
+positives (ref: *Table 4*).
+
+**Table 4: Model Performance Metrics**
+
+```{r, echo=FALSE}
+# Calculate metrics in separate named objects
+accuracy_val <- predictions |> yardstick::accuracy(truth = personal_loan, estimate = .pred_class, event_level = "second")
+sensitivity_val <- predictions |> yardstick::sensitivity(truth = personal_loan, estimate = .pred_class, event_level = "second")
+specificity_val <- predictions |> yardstick::specificity(truth = personal_loan, estimate = .pred_class, event_level = "second")
+auc_val <- predictions |> roc_auc(truth = personal_loan, .pred_Yes, event_level = "second")
+
+# Combine and rename metrics
+performance_table <- bind_rows(
+  accuracy_val |> mutate(.metric = "accuracy"),
+  sensitivity_val |> mutate(.metric = "sensitivity"),
+  specificity_val |> mutate(.metric = "specificity"),
+  auc_val |> mutate(.metric = "auc")
+)
+performance_table|> knitr::kable(format = "latex", booktabs = TRUE, align = "l") |>  # Left-align all columns
+  kableExtra::kable_styling(
+    position = "left",                # Aligns entire table to the left
+    latex_options = "hold_position", # Prevents floating
+    font_size = 10                    # Sets font size
+  )
+```
+
+Together, these results confirm that the logistic regression model is
+highly effective and reliable for predicting personal loan acceptance in
+this dataset.
+
+The ROC curve, as shown in *Figure 3,* indicates excellent separation
+between the two outcome classes.
+
+**Figure 3: ROC Curve for Logistic Regression Model**
+
+```{r fig-roc-curve, fig.width=3, fig.height=2, fig.align='center', echo=FALSE, fig.cap=""}
+roc_curve(predictions, truth = personal_loan, .pred_Yes, event_level = "second") |> 
+  autoplot()
+```
+
+## Conclusion
+
+The logistic regression model displays strong predictive performance
+(90% accuracy, AUC = 0.96). Key predictors such as *Income, Education,
+Family* size, and *CD Account* ownership were significantly associated
+with higher loan acceptance likelihood. Based on this model banks can
+improve targeting by focusing on financially stable, larger families,
+well-educated customers already engaged with their products, thereby
+enhancing marketing efficiency and minimizing credit risk.
