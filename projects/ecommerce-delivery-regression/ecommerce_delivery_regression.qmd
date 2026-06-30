@@ -1,0 +1,226 @@
+---
+title: "Predicting E-Commerce Delivery Time Using Linear Regression"
+author: "Prepared by: Gibson Gnanasehar - "
+format: pdf
+editor: visual
+---
+
+## Summary
+
+This analysis aims to predict e-commerce delivery time using a linear regression model. The study focuses on the relationship between promised delivery time, regional proximity, and actual delivery time.
+
+## Analysis Code
+
+Installing Packages
+
+```{r}
+# Using '#' since these packages are already installed  
+#install.packages("tidyverse")
+#install.packages("ggplot2")
+#install.packages("GGally")
+#install.packages("readxl")
+```
+
+Loading Libraries
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(GGally)
+library(ggplot2)
+```
+
+Importing the given data set by read function
+
+```{r}
+sales <- read_csv("sales.csv")
+```
+
+Viewing the raw data set
+
+```{r}
+view(sales)
+```
+
+## Data Cleaning
+
+Now removing the missing values in actual_delivery_time column which is our dependable variable for our predictive model.
+
+```{r}
+sales_clean = sales |> filter(!is.na(actual_delivery_time))
+view(sales_clean)
+```
+
+Rounding off actual delivery time value to refine the available data.
+
+```{r}
+sales_clean$actual_delivery_time <- round(sales_clean$actual_delivery_time, 2)
+```
+
+## Sampling data for Analysis
+
+To ensure efficiency, a random sample of 1000 observation is selected for our analysis
+
+```{r}
+id =  #student ID
+set.seed(id)
+sales_sample <- sales_clean |> slice_sample(n = 1000)
+
+
+```
+
+Inspecting the final sample
+
+```{r}
+view(sales_sample)
+glimpse(sales_sample)
+```
+
+```{r}
+summary(sales_sample)
+```
+
+## Choosing Variables
+
+We select *actual_delivery_time* as the dependent variable, with *promise* and *same_region* as independent variables.
+
+## Exploratory Analysis
+
+**Correlation between actual and promised delivery time**
+
+To check correlation of 2 chosen numerical variables for our analysis,
+
+```{r}
+cor(sales_sample$actual_delivery_time,sales_sample$promise)
+```
+
+The returned correlation value is
+
+```         
+0.7208618
+```
+
+Which indicates a **strong positive linear relationship,** and it is evident that whenever promised delivery time increases, the actual delivery time also increase.
+
+**Visualizing the relationship**
+
+Also to check this correlation relationship in a plot, we will use scatter plot with regression line as below
+
+```{r}
+ggplot(sales_sample, aes(x = promise, y = actual_delivery_time)) +
+  geom_point(alpha = 0.5, color = "steelblue") +       
+  geom_smooth(method = "lm", se = TRUE, color = "Green") +  
+  labs(title = "Relationship Between Promised and Actual Delivery Time",
+       x = "Promised Delivery Time (days)",
+       y = "Actual Delivery Time (days)") +
+  theme_minimal()
+```
+
+## Linear Regression Model
+
+Linear regression model fitting as below:-
+
+```{r}
+LM <-lm(actual_delivery_time ~ promise + same_region, data = sales_sample)
+```
+
+```{r}
+summary(LM)
+```
+
+R-Square value is **52.2%,** which is the variation in actual delivery time, 
+
+Creating model for the analysis of predicting delivery time
+
+β₀ - Intercept (Actual_delivery time)
+
+β₁ - Regression Coefficient (Promise)
+
+β₂ - Regression Coefficient (Same Region)
+
+ŷ = β₀ + β₁ × promise + β₂ × same_region
+
+The regression equation is **actual_delivery_time = -0.46243 + 0.85531 (Promise) + 0.31589 (Region).**
+
+The above coefficient values are stored in environment.
+
+```{r}
+b0 <- LM$coefficients[["(Intercept)"]]
+b1 <- LM$coefficients[["promise"]]
+b2 <- LM$coefficients[["same_region"]]
+```
+
+**Example 1 Prediction:** If an order has promised delivery time of 5 days, and is in same region. Then the predicted delivery time as per the created model will be
+
+**Delivery time = -0.46243+0.85531(5)+0.31589(1) \~= 4.13 days**
+
+```{r}
+b0+b1*5+b2*1
+```
+
+**Example 2 Prediction:** If an order has promised delivery time of 2 days, and is in different region. Then the predicted delivery time as per the created model will be
+
+**Delivery time = -0.46243+0.85531(2)+0.31589(0) \~= 1.24 days**
+
+```{r}
+b0+b1*2+b2*0
+```
+
+## Model Application on data set
+
+Create new column 'predicted_delivery' using mutate
+
+```{r}
+sales_sample <- sales_sample |>
+  mutate(predicted_delivery = round(b0 + b1 * promise + b2 * same_region, 2))
+```
+
+## Additional Insight
+
+In logistics, *order_type* is an important variable. However, when assessed using a linear regression model, its statistical significance was low. Despite this, a noticeable difference in delivery time exists between direct (1P) and third-party (3P) orders.
+
+To evaluate this, the data was grouped by *order_type*, and the mean *actual_delivery_time* for each category was calculated as follows:
+
+```{r}
+sales_sample |> group_by(order_type) |> 
+  summarise(avg_delivery = round(mean(actual_delivery_time), 2))
+```
+
+**Visualizing Delivery Time by Order Type**
+
+Creating column chart using group by and summarise function to visualize the above mean.
+
+```{r}
+sales_sample |>
+  group_by(order_type) |>
+  summarise(mean_delivery = mean(actual_delivery_time, na.rm = TRUE)) |>
+  ggplot(aes(x = order_type, y = mean_delivery, fill = order_type)) +
+  geom_col(width = 0.5, alpha = 0.8) +
+  labs(title = "Mean Delivery Time by Order Type",
+       x = "Order Type",
+       y = "Mean Delivery Time (days)") +
+  theme_minimal() +
+  theme(legend.position = "none") #ref, Gen AI to remove legend
+```
+
+```{r,echo=FALSE,include=FALSE}
+ggplot(sales_sample, aes(x = order_type, y = actual_delivery_time, fill = order_type)) +
+  geom_boxplot(width = 0.5, alpha = 0.7) +
+  stat_summary(fun = mean, geom = "point", shape = 20, size = 3, color = "black") +
+  labs(title = "Average Delivery Time by Order Type",
+       x = "Order Type",
+       y = "Actual Delivery Time (days)") +
+  theme_minimal()
+```
+
+It is clear that, **1st party direct orders are delivered in \~1 day**, while **3rd party orders take \~3 days**, suggesting operational differences to be addressed.
+
+## Analysis Findings & interpretation
+
+Used linear regression to predict actual e-commerce delivery time based on promised delivery days and region.
+
+Strong positive correlation was found between promised and actual delivery time, and same-region deliveries are generally faster.\
+
+Additional insights reveal that 1st party orders are fulfilled in \~1 day, while 3rd party orders take \~3 days on average.\
+
+These findings help the company to predict delivery time based on model and identify key factors affecting delivery performance, aiding in logistics planning thereby contributes to service improvement.
