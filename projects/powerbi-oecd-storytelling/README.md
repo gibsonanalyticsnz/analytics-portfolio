@@ -1,24 +1,27 @@
-## projects/powerbi-oecd-storytelling/README.md
+# Power BI Dashboards — Netflix Analytics & OECD Storytelling
 
-# Power BI Data Storytelling (OECD)
+![Netflix Content Analytics — Power BI dashboard](preview.png)
 
-**Course:** BUSINFO 703 — Data Visualisation for Business (individual)
+**Course:** BUSINFO 703 — Data Visualisation for Business
 
-### The problem
-Build a compelling, **ethical** data story for a non-technical business audience using public OECD data.
+Two Power BI projects: a **group Netflix content-analytics dashboard** (above) and an **individual OECD data-storytelling** piece.
 
-### What I did
-- Selected 3+ related OECD datasets across 5+ countries and 5+ years.
-- Performed all cleaning, transformation and modelling **inside Power BI** (Power Query + DAX) — including building a relationship between previously unrelated datasets.
-- Designed interactive visuals and **contrasted an ethical visualisation against a misleading one** to demonstrate visualisation ethics.
+---
+
+## ⭐ Netflix Content Analytics Dashboard (group)
+An interactive Power BI report exploring what drives Netflix content performance, combining the Netflix catalogue with IMDb ratings.
+
+- **Key Drivers of Critic Score** — a decomposition-tree view breaking critic score down by rating, country, genre, budget band and duration.
+- **Global Content Contribution** — world map of content volume by country.
+- **Content Volume vs. Critic Ratings**, **Average Ratings by Country**, and **Genre & Duration** analyses.
+- Applied **unsupervised machine learning (clustering) in R** to segment titles, surfaced through the dashboard.
+
+**Files:** `netflix_dashboard.pbix` (open in Power BI Desktop) · `netflix_clustering.R` · `group_assignment_brief.pdf`
+
+## OECD Data-Storytelling (individual)
+Cleaned and modelled multi-country OECD data entirely in **Power Query + DAX**, built interactive visuals, and contrasted an **ethical visualisation against a misleading one** to demonstrate visualisation ethics.
+
+**Files:** `powerbi_dashboard.pbix` · `reflection.pdf`
 
 ### Tools
-Power BI, Power Query, DAX.
-
-### Takeaway
-End-to-end BI: from raw OECD CSVs to an interactive, honest narrative.
-
-> The group extension (BUSINFO 703 A2) added **unsupervised machine learning in R** on a Netflix dataset, surfaced through a Power BI report for a business audience.
-
----
----
+Power BI · Power Query · DAX · R (clustering) · data storytelling.
