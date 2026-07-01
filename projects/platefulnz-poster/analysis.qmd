@@ -1,0 +1,1131 @@
+---
+title: "Predicting Customer Churn for PlatefulNZ using Predictive Analytics"
+subtitle: "BUSINFO 704 - Final Project"
+author: "Team 14 (Gibson, Matthew Lloyd, Nancy, Shailja, Sreenath)"
+format:
+  pdf:
+    pdf-engine: xelatex
+    papersize: a4
+    fontsize: 11pt
+    mainfont: "Times New Roman"
+    sansfont: "Arial"
+    geometry:
+      - top=14mm
+      - left=15mm
+      - right=15mm
+      - bottom=12mm
+      - heightrounded
+    colorlinks: true
+    fig-cap-location: top
+    tbl-cap-location: top
+    include-in-header: |
+      
+      % --- Optional line spacing ---
+      \usepackage{setspace}
+      \onehalfspacing
+
+      % --- Captions above figures/tables (KOMA) ---
+      \usepackage{caption}
+      \KOMAoption{captions}{tableheading,figureheading}
+
+       % --- Page numbers (top-right) on ALL pages ---
+        \setlength{\headheight}{16pt} % avoid fancyhdr warnings
+        % Define how "plain" pages (e.g., first/title) look:
+        \fancypagestyle{plain}{%
+          \fancyhf{}%
+          \fancyhead[R]{\thepage}%
+          \renewcommand{\headrulewidth}{0pt}%
+        }
+        % Default "fancy" style for the rest:
+        \pagestyle{fancy}
+        \fancyhf{}%
+        \fancyhead[R]{\thepage}%
+        \renewcommand{\headrulewidth}{0pt}%
+        \end{tikzpicture}%
+      }
+editor:
+  markdown:
+    wrap: 72
+editor_options:
+  chunk_output_type: console
+execute:
+  warning: false
+  message: false
+  echo: false
+---
+
+
+## Introduction
+PlatefulNZ is a New Zealand–based meal-kit provider founded by award-winning chef Sage Cooke, offering customised subscription meal plans. While the company has grown rapidly, rising customer churn threatens its long-term sustainability. This report applies predictive analytics to identify churn drivers and recommend actionable strategies for improving retention. Three modelling approaches were adopted: logistic regression as an interpretable baseline, random forest to capture non-linear interactions, and LightGBM as a state-of-the-art boosting algorithm optimised for predictive accuracy. By comparing model performance and interpretability, the analysis provides evidence-based insights to inform both operational and strategic decision-making at PlatefulNZ.
+
+```{r}
+#| label: setup
+#| include: false
+set.seed(909)
+knitr::opts_chunk$set(
+  echo = FALSE, message = FALSE, warning = FALSE,
+  fig.path = "images/", fig.align = "center", fig.width = 5, fig.height = 3
+)
+dir.create("images", showWarnings = FALSE)
+
+# Libraries
+library(tidyverse)
+library(janitor)
+library(pROC)
+library(rpart)
+library(randomForest)
+library(scales)
+library(forcats)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(caret)
+library(lightgbm)
+library(doParallel)
+
+```
+
+```{r}
+knitr::opts_chunk$set(
+  dev = if (isTRUE(capabilities()[["cairo"]])) "cairo_pdf" else "pdf"
+)
+```
+
+
+```{r}
+#| label: apa-theme
+#| include: true
+# Professional colorblind-safe palette (Okabe–Ito)
+pal <- list(
+  black   = "#000000",
+  blue    = "#0072B2",
+  green   = "#009E73",
+  red     = "#D55E00",
+  orange  = "#E69F00",
+  purple  = "#CC79A7",
+  yellow  = "#F0E442",
+  grey6   = "#0A0A0A",
+  grey4   = "#4B5563",
+  grey3   = "#9CA3AF",
+  grey2   = "#D1D5DB",
+  grey1   = "#F3F4F6"
+)
+
+theme_apa <- function(base_size = 11, base_family = "Times New Roman"){
+  theme_minimal(base_size = base_size, base_family = base_family) %+replace%
+    theme(
+      plot.title.position = "plot",
+      plot.title = element_text(face = "bold", color = pal$black),
+      panel.grid.major = element_line(color = pal$grey2, linewidth = 0.3),
+      panel.grid.minor = element_blank(),
+      panel.border = element_rect(color = pal$black, fill = NA, linewidth = 0.5),
+      axis.title = element_text(color = pal$black),
+      axis.text  = element_text(color = pal$black),
+      legend.position = "right",
+      legend.title = element_text(color = pal$black),
+      legend.text  = element_text(color = pal$black),
+      strip.background = element_rect(color = pal$black, fill = pal$grey1),
+      strip.text = element_text(face = "bold", color = pal$black)
+    )
+}
+scale_fill_retention <- function(){
+  scale_fill_manual(values = c(`0` = pal$grey3, `1` = pal$blue))
+}
+scale_color_models <- function(){
+  scale_color_manual(values = c(
+    "Logistic Regression" = pal$black,
+    "Decision Tree"       = pal$blue,
+    "Random Forest"       = pal$green,
+    "LightGBM"            = pal$red
+  ))
+}
+scale_fill_churnrate <- function(){
+  scale_fill_gradient(low = pal$grey2, high = pal$blue)
+}
+```
+
+```{r}
+#| label: load-data
+#| cache: true
+stopifnot(file.exists("platefulnz_customers.csv"))
+
+num_from <- function(x) suppressWarnings(readr::parse_number(as.character(x)))
+
+raw <- readr::read_csv("platefulnz_customers.csv") |>
+  janitor::clean_names()
+
+stopifnot("retained_binary" %in% names(raw))
+
+dat <- raw |>
+  mutate(
+    retained_binary = factor(trimws(as.character(retained_binary)), levels = c("0","1")),
+    # numeric parsing
+    weeks_since_signup         = num_from(weeks_since_signup),
+    weeks_since_last_purchase  = num_from(weeks_since_last_purchase),
+    avg_add_onpurchase_value   = num_from(avg_add_onpurchase_value),
+    discounted_rate_last_purchase = as.numeric(discounted_rate_last_purchase),
+    age                        = as.numeric(age),
+    num_purchases              = as.numeric(num_purchases),
+    app_visits                 = as.numeric(app_visits),
+    website_visits             = as.numeric(website_visits),
+    social_media_comments      = as.numeric(social_media_comments),
+    social_media_posts         = as.numeric(social_media_posts),
+    social_media_likes         = as.numeric(social_media_likes),
+    social_media_shares        = as.numeric(social_media_shares),
+    # categoricals
+    gender        = factor(gender),
+    support_ticket= factor(support_ticket),
+    satisfaction_survey = factor(satisfaction_survey),
+    last_login_device   = factor(last_login_device),
+    last_browser = factor(last_browser),
+    location     = factor(location),
+    subscription = factor(subscription),
+    payment_type = factor(payment_type),
+    opened_last_email = factor(opened_last_email),
+    subscription_payment_problem_last4weeks = factor(subscription_payment_problem_last4weeks)
+  ) |>
+  # engineered features
+  mutate(
+    activity_per_week = ifelse(!is.na(weeks_since_signup) & weeks_since_signup > 0,
+                               num_purchases / weeks_since_signup, 0),
+    payment_issue_flag = ifelse(as.character(subscription_payment_problem_last4weeks) %in%
+                                  c("TRUE","True","Yes","1","1.0"), 1, 0),
+    low_satisfaction_flag = ifelse(as.character(satisfaction_survey) %in% c("1","2"), 1, 0),
+    discount_dependency = ifelse(is.na(avg_add_onpurchase_value) | avg_add_onpurchase_value == 0,
+                                 0, discounted_rate_last_purchase / avg_add_onpurchase_value),
+    # Age bins
+    age_group = case_when(
+      age < 25 ~ "Below 25",
+      age >= 25 & age <= 40 ~ "26–40",
+      age >= 41 & age <= 55 ~ "41–55",
+      age >= 56 & age <= 70 ~ "56–70",
+      age > 70 ~ "70+",
+      TRUE ~ NA_character_
+    ),
+    age_group = factor(age_group, levels = c("Below 25","26–40","41–55","56–70","70+")),
+    # Combined social media engagement
+    social_media_total = coalesce(social_media_comments,0) +
+                         coalesce(social_media_posts,0) +
+                         coalesce(social_media_likes,0) +
+                         coalesce(social_media_shares,0)
+  )
+
+stopifnot(is.data.frame(dat), nrow(dat) > 0)
+```
+
+## Dataset Overview
+The dataset comprises 200,000 customer records collected over a 90-day period, with 26 variables spanning demographics, subscription plans, purchase behaviour, and digital engagement. Data preparation followed three structured steps.
+First, missing demographic values were imputed where feasible, while sparsely populated fields were excluded.
+Second, categorical variables (such as subscription type, location, and device) were recoded as factors, and survey ratings were treated as ordinal variables.
+Finally, new features were engineered to capture customer behaviour more precisely, including purchase activity rates, discount dependency, and digital engagement scores. The binary target variable, retained_binary, distinguishes between customers who remained subscribed (1) and those who churned (0).
+These transformations ensured consistency for statistical testing and predictive modelling. The dataset reveals that approximately 77% of customers were retained and 23% churned, underscoring the importance of identifying at-risk segments for proactive intervention.
+
+### Assumptions and Limitations 
+1. The 90-day observation window is assumed to be representative of long-term customer behaviour.
+2. Customer-reported satisfaction and engagement metrics are treated as accurate, though they may contain response bias (dissatisfied customers more likely to reply).
+3. Some regions and subscription types have smaller sample sizes, which may limit representativeness of churn rates.
+4. External influences such as competition, seasonality, or economic conditions were not included in the modelling.
+5. Churn cases were less frequent than retained cases, creating class imbalance. While no oversampling was applied, LightGBMs boosting framework helped reduce this impact by focusing iteratively on misclassified churners, which improved recall for churners.
+
+### Competitor Edge in Customer Retention
+A brief comparison with competitors highlights both common challenges
+and differentiation opportunities. Like PlatefulNZ, rival subscription
+meal providers also face high churn in the first three months, driven by
+trial users and price-sensitive customers. However, some competitors
+reduce attrition through stronger loyalty programs, personalised
+discounts, and flexible pause/resume options. Compared to these
+approaches, PlatefulNZ benefits from strong brand recognition and
+chef-designed menus, but its retention strategy appears less mature.
+Aligning more closely with competitor practices such as targeted
+onboarding offers and adaptive pricing could strengthen customer loyalty
+while leveraging PlatefulNZ’s unique positioning in quality and local
+sourcing.
+
+```{r}
+#| label: tbl-data-overview
+#| tbl-cap: "*Dataset overview and target balance.*"
+#| cache: true
+total_rows    <- nrow(dat)
+total_cols    <- ncol(dat)
+total_missing <- sum(is.na(dat))
+pct_missing   <- if (total_rows * total_cols == 0) 0 else total_missing / (total_rows * total_cols)
+
+tb <- table(droplevels(dat$retained_binary))
+n_churn    <- unname(if ("0" %in% names(tb)) tb[["0"]] else 0)
+n_retained <- unname(if ("1" %in% names(tb)) tb[["1"]] else 0)
+p_churn    <- n_churn / total_rows
+p_retained <- n_retained / total_rows
+
+n_numeric <- sum(sapply(dat, is.numeric))
+n_factor  <- sum(sapply(dat, is.factor))
+n_char    <- sum(sapply(dat, is.character))
+n_other   <- total_cols - (n_numeric + n_factor + n_char)
+
+overview_tbl <- tibble::tibble(
+  Metric = c("Rows", "Columns", "Total missing cells", "Missing cells (percent)",
+             "Churned (n)", "Churned (percent)",
+             "Retained (n)", "Retained (percent)",
+             "Numeric variables", "Factor variables", "Character variables", "Other variables"),
+  Value  = c(
+    total_rows,
+    total_cols,
+    total_missing,
+    scales::percent(pct_missing, accuracy = 0.1),
+    n_churn,
+    scales::percent(p_churn, accuracy = 0.1),
+    n_retained,
+    scales::percent(p_retained, accuracy = 0.1),
+    n_numeric,
+    n_factor,
+    n_char,
+    n_other
+  )
+)
+knitr::kable(overview_tbl, align = "lr")
+```
+
+This process ensured consistency for statistical testing and model
+training. Overall, about **77% were retained** and **23% churned**,
+highlighting a meaningful business challenge .
+
+## Exploratory Data Analysis
+Descriptive statistics and visualisations were used to understand customer behaviour, detect churn patterns, and identify variables most relevant for modelling. In summary, the dataset is clean, and diverse, making it well-suited for building churn prediction models that combine behavioural, demographic, and engagement-related factors.
+
+```{r}
+#| label: tbl-numeric-summary
+#| tbl-cap: "*Summary statistics for key numeric variables.*"
+
+# Pick common numeric variables that may exist in your data
+num_candidates <- c(
+  "age","weeks_since_signup","weeks_since_last_purchase",
+  "num_purchases","avg_add_onpurchase_value","discounted_rate_last_purchase",
+  "app_visits","website_visits",
+  "social_media_comments","social_media_posts","social_media_likes","social_media_shares"
+)
+
+num_vars <- intersect(num_candidates, names(dat))
+num_vars <- num_vars[sapply(dat[num_vars], is.numeric)]
+
+if (length(num_vars) == 0) {
+  knitr::kable(
+    data.frame(Note = "No numeric variables available for summary."),
+    align = "l"
+  )
+} else {
+  num_summ <- lapply(num_vars, function(v) {
+    x <- dat[[v]]
+    x <- x[is.finite(x)]  # ignore Inf/-Inf
+    tibble::tibble(
+      Variable = v,
+      Missing  = sum(is.na(dat[[v]])),
+      Mean     = mean(x, na.rm = TRUE),
+      SD       = stats::sd(x, na.rm = TRUE),
+      Min      = min(x, na.rm = TRUE),
+      Q1       = stats::quantile(x, 0.25, na.rm = TRUE, names = FALSE),
+      Median   = stats::median(x, na.rm = TRUE),
+      Q3       = stats::quantile(x, 0.75, na.rm = TRUE, names = FALSE),
+      Max      = max(x, na.rm = TRUE)
+    )
+  }) |> dplyr::bind_rows()
+
+  # APA-friendly rounding
+  num_summ <- num_summ |>
+    dplyr::mutate(
+      Mean = round(Mean, 3), SD = round(SD, 3),
+      Min = round(Min, 3), Q1 = round(Q1, 3), Median = round(Median, 3),
+      Q3 = round(Q3, 3), Max = round(Max, 3)
+    )
+
+  knitr::kable(num_summ, align = "lrrrrrrrrr")
+}
+
+```
+
+Table 2 presents descriptive statistics for variables including age, weeks since signup, number of purchases, and digital engagement measures. The average customer age is approximately 42 years, with a median tenure of seven weeks. Customers made an average of six purchases, while add-on spending showed high variability with a median of $14. Website visits were more common than app visits, and overall social media activity remained low. These descriptive results confirm the completeness of numeric variables and provide an initial profile of typical customer behaviour.
+
+```{r}
+#| label: fig-1-churn
+#| fig-cap: "*Overall churn vs retention.*"
+dat |>
+  mutate(group = if_else(retained_binary == "1", "Retained", "Churned")) |>
+  count(group) |>
+  mutate(pct = n / sum(n)) |>
+  ggplot(aes(group, pct, fill = group)) +
+  geom_col(width = 0.6) +
+  scale_y_continuous(labels = percent_format()) +
+  scale_fill_manual(values = c("Churned" = pal$grey3, "Retained" = pal$blue), guide = "none") +
+  labs(x = NULL, y = "Share") +
+  theme_apa()
+
+```
+
+Figure 1 shows that approximately 77% of customers were retained and 23% churned. This highlights a notable attrition challenge for the business, as nearly one in four customers discontinued their subscription.
+
+```{r}
+#| label: fig-2-region
+#| fig-cap: "*Churn rate by region.*"
+if (!"location" %in% names(dat) || all(is.na(dat$location))) {
+  plot.new(); title("No region field in dataset")
+} else {
+  dat |>
+    mutate(churn = if_else(retained_binary == "0", 1, 0)) |>
+    group_by(location) |>
+    summarise(churn_rate = mean(churn, na.rm = TRUE), .groups = "drop") |>
+    arrange(desc(churn_rate)) |>
+    mutate(location = fct_reorder(location, churn_rate)) |>
+    ggplot(aes(location, churn_rate)) +
+    geom_col(fill = pal$blue) +
+    scale_y_continuous(labels = percent_format()) +
+    coord_flip() +
+    labs(x = NULL, y = "Churn rate") +
+    theme_apa()
+}
+
+```
+
+
+
+Figure 2 demonstrates strong geographic variation in churn. The West Coast records the highest churn rate, exceeding 60%, followed by Marlborough, Nelson, and Otago. Canterbury and Southland also show relatively elevated churn, around 30%. By contrast, major urban centres such as Auckland and Wellington report churn rates closer to 20%, indicating relatively better retention. This pattern suggests that location could be a key driver of churn risk, with smaller and regional markets being more vulnerable than metropolitan areas.
+
+```{r}
+#| label: fig-3-numeric
+#| fig-cap: "*Key numeric predictors vs target.*"
+num_show <- intersect(c("weeks_since_signup","num_purchases","avg_add_onpurchase_value","age"),
+                      names(dat))
+if (length(num_show) == 0) {
+  plot.new(); title("No numeric predictors available")
+} else {
+  dat |>
+    pivot_longer(all_of(num_show), names_to = "metric", values_to = "value") |>
+    ggplot(aes(retained_binary, value, fill = retained_binary)) +
+    geom_boxplot(outlier.alpha = 0.15, linewidth = 0.4) +
+    facet_wrap(~ metric, scales = "free_y") +
+    scale_fill_retention() +
+    labs(x = "Retained (0 = Churn, 1 = Retained)", y = NULL, fill = NULL) +
+    theme_apa() +
+    theme(legend.position = "none")
+}
+```
+
+Figure 3 compares distributions of key numeric predictors between churned and retained customers. Retained customers are slightly older, have longer tenure, make more purchases, and spend more on add-ons compared with churned customers. These differences indicate that customer age, tenure, and purchasing activity could be some important retention indicators.
+
+```{r}
+#| label: fig-age-retention
+#| fig-cap: "*Retention by age category.*"
+dat |>
+  filter(!is.na(age_group)) |>
+  count(age_group, retained_binary) |>
+  group_by(age_group) |>
+  mutate(prop = n / sum(n)) |>
+  ggplot(aes(x = age_group, y = prop, fill = retained_binary)) +
+  geom_col(position = "fill") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  scale_fill_retention() +
+  labs(x = "Age Category", y = "Proportion", fill = "Retention\n(0=Churn, 1=Retained)") +
+  theme_apa()
+```
+
+Figure 4 shows that retention is strongest among mid to older age groups, with more than 75% of customers aged 26 and above remaining active. Customers below 25 show the lowest retention, with churn rates around 35%. However, this younger group represents only 12% of the total customer base, whereas the majority (over 60%) fall in the 26–55 age range. This indicates that while younger customers may be more difficult to retain, the greatest impact on overall churn management could come from strategies focused on the mid-life customer base.
+
+```{r}
+#| label: fig-social-heatmap
+#| fig-cap: "*Heatmap of churn rate by social media engagement bands.*"
+dat |>
+  filter(is.finite(social_media_total)) |>
+  mutate(
+    social_band = cut(
+      social_media_total,
+      breaks = quantile(social_media_total, probs = c(0, 0.33, 0.66, 1), na.rm = TRUE),
+      include.lowest = TRUE,
+      labels = c("Low","Medium","High")
+    ),
+    churn = if_else(retained_binary == "0", 1, 0)
+  ) |>
+  group_by(social_band) |>
+  summarise(churn_rate = mean(churn, na.rm = TRUE), .groups = "drop") |>
+  ggplot(aes(x = "Churn", y = social_band, fill = churn_rate)) +
+  geom_tile(width = 0.6, height = 0.9, color = "white", linewidth = 0.3) +
+  geom_text(aes(label = scales::percent(churn_rate, accuracy = 1)), color = pal$black) +
+  scale_fill_churnrate() +
+  labs(x = NULL, y = "Social Media Engagement", fill = "Churn Rate") +
+  theme_apa()
+```
+
+Figure 5 highlights the effect of digital engagement on churn. Customers with low levels of social media interaction had shown highest churn rate at 24%, compared with 21% among highly engaged customers. Although the difference is modest, the pattern suggests that encouraging better social media engagement may contribute to stronger retention outcomes.
+
+```{r, include=FALSE}
+# ======================
+# Exploratory Statistical Tests
+# ======================
+
+# Outcome variable
+target <- "retained_binary"
+
+# 1. T-tests for numeric variables
+num_vars <- names(dat)[sapply(dat, is.numeric)]
+num_vars <- setdiff(num_vars, target)
+
+for (v in num_vars) {
+  cat("\nT-test for:", v, "\n")
+  print(t.test(dat[[v]] ~ dat[[target]]))
+}
+
+# 2. Chi-square tests for categorical variables
+cat_vars <- names(dat)[sapply(dat, function(x) is.factor(x) || is.character(x))]
+cat_vars <- setdiff(cat_vars, target)
+
+for (v in cat_vars) {
+  cat("\nChi-square test for:", v, "\n")
+  tbl <- table(dat[[v]], dat[[target]])
+  print(chisq.test(tbl))
+}
+
+```
+
+
+## Model Development
+To analyse churn, a structured modelling process was applied. This included data preparation and preprocessing, variable selection, and the application of multiple algorithms. Models were trained and evaluated on holdout data, with results compared to balance predictive accuracy with interpretability.
+
+```{r}
+#| label: build-fit
+#| cache: true
+# Defensive model build (handles missing columns, NA factors, etc.)
+
+# 1) Choose predictors that actually exist -----------------------------
+want_predictors <- c(
+  "num_purchases","discounted_rate_last_purchase","weeks_since_signup","age",
+  "activity_per_week","discount_dependency","payment_type","low_satisfaction_flag",
+  "location","subscription","satisfaction_survey","payment_issue_flag"
+)
+predictors <- intersect(want_predictors, names(dat))
+stopifnot(length(predictors) > 0)
+
+# 2) Build modeling frame ----------------------------------------------
+model_df <- dat |>
+  dplyr::select(retained_binary, dplyr::all_of(predictors)) |>
+  dplyr::mutate(
+    # ensure target is factor with levels 0/1 in that order
+    retained_binary = factor(as.character(retained_binary), levels = c("0","1"))
+  )
+
+# 3) Impute numerics; make factor NAs explicit -------------------------
+num_cols <- names(model_df)[sapply(model_df, is.numeric)]
+if (length(num_cols)) {
+  for (v in num_cols) {
+    med <- suppressWarnings(stats::median(model_df[[v]], na.rm = TRUE))
+    if (!is.finite(med)) med <- 0
+    model_df[[v]][!is.finite(model_df[[v]]) | is.na(model_df[[v]])] <- med
+  }
+}
+# make any character -> factor, and set NA level for factors
+model_df <- model_df |>
+  dplyr::mutate(across(where(is.character), as.factor)) |>
+  dplyr::mutate(across(where(is.factor), ~ forcats::fct_explicit_na(.x, na_level = "Unknown")))
+
+# 4) Drop any still-incomplete rows (should be rare now) ---------------
+model_df <- model_df[stats::complete.cases(model_df), , drop = FALSE]
+stopifnot(nrow(model_df) > 1)
+
+# 5) Stratified split 70/30 --------------------------------------------
+tb <- table(droplevels(model_df$retained_binary))
+stopifnot(length(tb) == 2L)
+
+set.seed(909)
+idx0 <- which(droplevels(model_df$retained_binary) == "0")
+idx1 <- which(droplevels(model_df$retained_binary) == "1")
+n0 <- length(idx0); n1 <- length(idx1)
+
+clamp <- function(w, n){
+  if (n <= 1L) return(0L)
+  w <- max(1L, w)
+  min(w, n - 1L)
+}
+t0 <- clamp(floor(0.7 * n0), n0)
+t1 <- clamp(floor(0.7 * n1), n1)
+
+train_idx <- sort(unique(c(if (t0 > 0L) sample(idx0, t0), if (t1 > 0L) sample(idx1, t1))))
+test_idx  <- setdiff(seq_len(nrow(model_df)), train_idx)
+
+stopifnot(length(train_idx) > 0L, length(test_idx) > 0L)
+
+train <- droplevels(model_df[train_idx, , drop = FALSE])
+test  <- droplevels(model_df[test_idx,  , drop = FALSE])
+
+# 6) Drop single-level factors & zero-variance numerics (train) --------
+is_single_level_factor <- sapply(train, function(x) is.factor(x) && nlevels(droplevels(x)) < 2)
+is_zero_var_numeric    <- sapply(train, function(x) is.numeric(x) && stats::sd(x, na.rm = TRUE) == 0)
+drop_cols <- setdiff(names(which(is_single_level_factor | is_zero_var_numeric)), "retained_binary")
+if (length(drop_cols) > 0) {
+  train <- train[, setdiff(names(train), drop_cols), drop = FALSE]
+  test  <- test[,  intersect(names(test), names(train)), drop = FALSE]
+}
+
+# 7) Align factor levels in test to train ------------------------------
+for (v in names(train)) {
+  if (is.factor(train[[v]])) {
+    test[[v]] <- factor(test[[v]], levels = levels(train[[v]]))
+  }
+}
+# Remove any rows that became NA after level alignment
+test <- test[stats::complete.cases(test), , drop = FALSE]
+stopifnot(nrow(test) > 0L)
+
+# 8) Model formula ------------------------------------------------------
+form <- as.formula(paste(
+  "retained_binary ~",
+  paste(setdiff(names(train), "retained_binary"), collapse = " + ")
+))
+
+# 9) Fit baseline models -----------------------------------------------
+# Logistic Regression
+mod_logit  <- stats::glm(form, data = train, family = stats::binomial())
+prob_logit <- suppressWarnings(stats::predict(mod_logit, newdata = test, type = "response"))
+
+# Decision Tree
+mod_tree  <- rpart::rpart(form, data = train, method = "class")
+prob_tree <- predict(mod_tree, newdata = test, type = "prob")[, 2]
+
+# Random Forest
+set.seed(909)
+mod_rf <- randomForest::randomForest(
+  form, data = train,
+  ntree = 300,
+  mtry = max(1, floor(sqrt(ncol(train) - 1))),
+  importance = TRUE
+)
+prob_rf <- predict(mod_rf, newdata = test, type = "prob")[, 2]
+
+# 10) ROC objects (safe coercions) -------------------------------------
+y_num <- as.numeric(as.character(test$retained_binary))  # 0/1
+roc_logit <- pROC::roc(y_num, as.numeric(prob_logit))
+roc_tree  <- pROC::roc(y_num, as.numeric(prob_tree))
+roc_rf    <- pROC::roc(y_num, as.numeric(prob_rf))
+```
+
+## Baseline modelling pipeline
+### Predictors & frame:
+A structured pipeline was developed to ensure models were trained and evaluated consistently. A predefined set of predictors identified from exploratory analysis was intersected with available dataset columns, with the target variable (retained_binary) encoded as a binary factor (0 = churn, 1 = retained).
+
+### Preprocessing:
+Data preprocessing addressed missing and inconsistent values. Numeric gaps were imputed using medians to minimise distortion from outliers, while categorical attributes were converted to factors with explicit “Unknown” levels to preserve information from incomplete records. Rare incomplete rows were removed to improve model stability.
+
+### Split:
+The dataset was then partitioned into training (70%) and test (30%) subsets using stratified sampling to maintain class balance.
+
+### Screening & alignment:
+Dropped single-level factors and zero-variance numerics from train; column/level alignment enforced on test.
+
+### Models:
+Four approaches were used to balance clarity and accuracy: logistic regression (simple, interpretable baseline), a decision tree, a random forest (many trees combined for stability), and LightGBM (an advanced boosting method tuned for higher accuracy). Each model estimates a customer’s likelihood of being retained; for churn-focused actions, this is expressed as churn risk using the same output. Models are compared on a separate test sample using a separation measure (AUC—how well the model tells likely churners from retained customers) and, at an agreed action cut-off, operational measures such as accuracy (overall correctness), precision (how often flagged customers truly churn), and recall (how many churners are captured). LightGBM was added after the baselines and emerged as the strongest candidate for deployment.
+
+### Evaluation:
+Computed ROC objects (pROC) for each model to enable AUC-based comparison; operating thresholds can be set subsequently based on business priorities.
+
+```{r}
+#| label: cv-setup
+#| cache: true
+set.seed(909)
+
+# pick training frame safely (avoid caret::train() name clash)
+train_src <- if (exists("train") && is.data.frame(train)) train else
+             if (exists("train_df") && is.data.frame(train_df)) train_df else
+             stop("No training data frame named 'train' or 'train_df' found.")
+
+# caret-friendly target (twoClassSummary expects factor with 2 levels)
+train_cv <- train_src |>
+  dplyr::mutate(Retained = factor(ifelse(retained_binary == "1","Retained","Churn"),
+                                  levels = c("Churn","Retained"))) |>
+  dplyr::select(-retained_binary)
+
+# 3-fold CV with ROC; keep parallel OFF for knitting stability
+tc_fast <- caret::trainControl(
+  method = "cv", number = 3,
+  classProbs = TRUE,
+  summaryFunction = caret::twoClassSummary,
+  savePredictions = "final",
+  allowParallel = FALSE
+)
+
+# predictor count (for RF grid)
+p <- ncol(train_cv) - 1
+
+```
+
+### Cross-validation
+A 3-fold cross-validation scheme was configured in caret with a fixed seed for reproducibility. The outcome was re-coded as a two-level factor (Churn, Retained) so that churn is treated as the event of interest when computing ROC/AUC, sensitivity, and specificity. Class probabilities were enabled and fold-wise predictions saved for diagnostics, with parallel processing disabled for reliable rendering. The predictor count was recorded to size later tuning grids (e.g., random forest mtry).
+
+```{r}
+#| label: cv-rf
+#| cache: true
+set.seed(909)
+
+# small grid; fast CV
+rf_grid <- data.frame(mtry = unique(pmax(1, round(c(sqrt(p), max(1, p/3))))))
+
+rf_cv <- caret::train(
+  Retained ~ ., data = train_cv,
+  method = "rf",
+  trControl = tc_fast,
+  metric = "ROC",
+  tuneGrid = rf_grid,
+  ntree = 150,           # fewer trees to speed up CV
+  importance = FALSE
+)
+
+rf_cv_results <- rf_cv$results |> dplyr::arrange(dplyr::desc(ROC))
+knitr::kable(rf_cv_results, digits = 3,
+             caption = "Random Forest 3-fold CV (training, fast)")
+best_mtry <- rf_cv$bestTune$mtry
+
+```
+
+### Random Forest cross-validation
+A fast 3-fold CV was executed in caret to tune the Random Forest mtry hyperparameter over a compact grid (√p and p/3). Models were evaluated using ROC/AUC with class probabilities enabled, and ntree was capped at 150 to reduce runtime during tuning. CV results were tabulated and the best setting (best_mtry) retained for subsequent modelling/refit.
+
+```{r}
+#| label: lgbm-mm
+#| cache: true
+# freeze model-matrix terms so train/test align for LightGBM
+train_src <- if (exists("train") && is.data.frame(train)) train else
+             if (exists("train_df") && is.data.frame(train_df)) train_df else
+             stop("No training data frame named 'train' or 'train_df' found.")
+test_src  <- if (exists("test") && is.data.frame(test)) test else
+             if (exists("test_df") && is.data.frame(test_df)) test_df else
+             stop("No test data frame named 'test' or 'test_df' found.")
+
+train_cv_mm <- train_src |>
+  dplyr::mutate(Retained = factor(ifelse(retained_binary=="1","Retained","Churn"),
+                                  levels=c("Churn","Retained"))) |>
+  dplyr::select(-retained_binary)
+
+mm_terms <- terms(Retained ~ ., data = train_cv_mm)
+
+train_x <- model.matrix(mm_terms, data = train_cv_mm)[, -1, drop = FALSE]
+train_y <- as.numeric(train_cv_mm$Retained == "Retained")
+
+test_cv <- test_src |>
+  dplyr::mutate(Retained = factor(ifelse(retained_binary=="1","Retained","Churn"),
+                                  levels=c("Churn","Retained")))
+test_x <- model.matrix(mm_terms, data = test_cv)[, -1, drop = FALSE]
+test_y <- as.numeric(test_cv$Retained == "Retained")   # for pROC
+truth_lab <- factor(ifelse(test_src$retained_binary=="1","Retained","Churn"),
+                    levels=c("Churn","Retained"))        # for confusionMatrix
+
+dtrain <- lightgbm::lgb.Dataset(data = train_x, label = train_y)
+
+```
+
+### LightGBM design matrix preparation
+LightGBM was incorporated in a later iteration as a supplementary model for comparative benchmarking. To prepare inputs, the training outcome was recoded to a two-level factor (Churn, Retained) and a model terms object was learned on the training data to fix the feature design. Using this specification, model.matrix() produced aligned, dummy-encoded matrices for training and test (intercept removed). Labels were encoded as 0/1 (1 = Retained) for LightGBM, and a factor version (truth_lab) was retained for confusion-matrix reporting. The resulting matrix and labels were packaged into an lgb.Dataset for downstream LightGBM training.
+
+```{r}
+#| label: cv-lgbm
+#| cache: true
+lgb_grid <- tidyr::crossing(
+  num_leaves       = c(15, 31, 63),
+  feature_fraction = c(0.8, 0.9),
+  bagging_fraction = c(0.7, 0.8),
+  min_data_in_leaf = c(20, 50)
+)
+
+set.seed(909)
+lgb_cv_summ <- purrr::pmap_dfr(
+  lgb_grid,
+  function(num_leaves, feature_fraction, bagging_fraction, min_data_in_leaf) {
+    params <- list(
+      objective          = "binary",
+      metric             = "auc",
+      learning_rate      = 0.05,
+      num_leaves         = num_leaves,
+      feature_fraction   = feature_fraction,
+      bagging_fraction   = bagging_fraction,
+      bagging_freq       = 5,
+      min_data_in_leaf   = min_data_in_leaf,
+      feature_pre_filter = FALSE,  # must be FALSE when min_data_in_leaf varies
+      verbosity          = -1
+    )
+
+    cv <- lightgbm::lgb.cv(
+      params   = params,
+      data     = dtrain,
+      nrounds  = 1000,
+      nfold    = 5,
+      stratified = TRUE,
+      early_stopping_rounds = 50,
+      verbose  = -1
+    )
+
+    best_iter <- cv$best_iter
+    best_auc  <- if (!is.null(cv$best_score)) cv$best_score else
+                 max(cv$record_evals$valid$auc$eval)
+
+    tibble::tibble(
+      num_leaves       = num_leaves,
+      feature_fraction = feature_fraction,
+      bagging_fraction = bagging_fraction,
+      min_data_in_leaf = min_data_in_leaf,
+      best_iter        = best_iter,
+      cv_auc           = best_auc
+    )
+  }
+)
+
+lgb_cv_results <- lgb_cv_summ |> dplyr::arrange(dplyr::desc(cv_auc))
+knitr::kable(lgb_cv_results, digits = 4,
+             caption = "LightGBM 5-fold CV (training)")
+best_row <- lgb_cv_results[1,]
+```
+
+```{r}
+#| label: final-fit-and-test
+#| cache: true
+# Final Random Forest with best mtry from CV
+final_rf <- randomForest(
+  form, data = train,
+  ntree = 300, mtry = best_mtry, importance = TRUE
+) 
+prob_rf_final <- predict(final_rf, newdata = test, type = "prob")[,2]
+
+# Final LightGBM with best params from CV
+final_params <- list(
+  objective        = "binary",
+  metric           = "auc",
+  learning_rate    = 0.05,
+  num_leaves       = best_row$num_leaves,
+  feature_fraction = best_row$feature_fraction,
+  bagging_fraction = best_row$bagging_fraction,
+  bagging_freq     = 5,
+  min_data_in_leaf = best_row$min_data_in_leaf,
+  verbosity        = -1
+)
+
+set.seed(909)
+final_lgbm <- lgb.train(
+  params  = final_params,
+  data    = dtrain,
+  nrounds = best_row$best_iter,
+  valids  = list(train = dtrain),
+  verbose = -1
+)
+prob_lgbm_final <- predict(final_lgbm, test_x)
+
+# AUCs
+roc_rf_final   <- pROC::roc(test_y, as.numeric(prob_rf_final))
+roc_lgbm_final <- pROC::roc(test_y, as.numeric(prob_lgbm_final))
+```
+
+### Final model training and test evaluation (chunk: final-fit-and-test).
+A final Random Forest was fitted with the CV-selected mtry, and a final LightGBM was trained using the best cross-validated hyperparameters and iteration count. Both models produced test-set retention probabilities, from which ROC curves and AUCs were computed to assess generalisation performance on the held-out data.
+
+```{r}
+#| label: helpers-metrics
+#| include: false
+confusion_counts <- function(prob, truth_factor, threshold = 0.5) {
+  truth <- as.character(truth_factor)
+  pred  <- ifelse(prob >= threshold, "1", "0")
+  tab   <- table(Predicted = factor(pred, levels = c("0","1")),
+                 Actual    = factor(truth, levels = c("0","1")))
+
+  TN <- if (!is.na(tab["0","0"])) tab["0","0"] else 0
+  FP <- if (!is.na(tab["1","0"])) tab["1","0"] else 0
+  FN <- if (!is.na(tab["0","1"])) tab["0","1"] else 0
+  TP <- if (!is.na(tab["1","1"])) tab["1","1"] else 0
+
+  tibble::tibble(TN = TN, FP = FP, FN = FN, TP = TP)
+}
+
+safe_auc <- function(roc_obj) {
+  tryCatch({
+    a <- as.numeric(roc_obj$auc)
+    if (length(a) == 0 || !is.finite(a)) NA_real_ else a
+  }, error = function(e) NA_real_)
+}
+
+safe_metrics <- function(prob, truth, thr = 0.5) {
+  if (is.null(prob) || is.null(truth)) return(NULL)
+  y <- as.character(truth)
+  pred <- ifelse(as.numeric(prob) >= thr, "1", "0")
+  lv <- c("0","1")
+  tab <- table(factor(pred, levels = lv), factor(y, levels = lv))
+  TN <- as.numeric(tab["0","0"]); FP <- as.numeric(tab["1","0"])
+  FN <- as.numeric(tab["0","1"]); TP <- as.numeric(tab["1","1"])
+  TN[is.na(TN)] <- 0; FP[is.na(FP)] <- 0; FN[is.na(FN)] <- 0; TP[is.na(TP)] <- 0
+  acc  <- (TP + TN) / pmax(1, TP + TN + FP + FN)
+  prec <- if ((TP + FP) == 0) NA_real_ else TP / (TP + FP)
+  rec  <- if ((TP + FN) == 0) NA_real_ else TP / (TP + FN)
+  spec <- if ((TN + FP) == 0) NA_real_ else TN / (TN + FP)
+  f1   <- if (is.na(prec) || is.na(rec) || (prec + rec) == 0) NA_real_ else 2 * prec * rec / (prec + rec)
+  tibble::tibble(Accuracy = acc, Precision = prec, Recall = rec, Specificity = spec, F1 = f1)
+}
+```
+
+```{r}
+#| label: tbl-cv-summary-train
+#| cache: true
+#| tbl-cap: "*Cross-validation (training) — model selection by AUC.*"
+cv_rows <- list()
+if (exists("rf_cv") && !is.null(rf_cv$results)) {
+  cv_rows$rf <- tibble::tibble(
+    Model = "Random Forest (CV best)",
+    AUC   = suppressWarnings(max(rf_cv$results$ROC, na.rm = TRUE))
+  )
+}
+if (exists("lgb_cv_results") && is.data.frame(lgb_cv_results) && nrow(lgb_cv_results) > 0) {
+  cv_rows$lgb <- tibble::tibble(
+    Model = "LightGBM (CV best)",
+    AUC   = suppressWarnings(max(lgb_cv_results$cv_auc, na.rm = TRUE))
+  )
+}
+if (!length(cv_rows)) {
+  knitr::kable(data.frame(Message = "No CV results available."), align = "l")
+} else {
+  cv_tbl <- dplyr::bind_rows(cv_rows) |>
+    dplyr::arrange(dplyr::desc(AUC)) |>
+    dplyr::mutate(AUC = round(AUC, 3))
+  knitr::kable(cv_tbl, align = c("l","r"))
+}
+```
+
+Table 4 shows that LightGBM delivers very similar cross-validated AUCs across many hyperparameter combinations (cv_auc ≈ 0.943–0.944), indicating low sensitivity to moderate changes in tree size (num_leaves) and subsampling (feature_fraction, bagging_fraction). The top setting achieves cv_auc ≈ 0.944 with early-stopping iterations around ~300–350, suggesting a moderately complex model with effective regularisation.
+
+Table 5 compares the best cross-validated models: LightGBM (AUC 0.944) outperforms Random Forest (AUC 0.925) on the training CV. Both are strong, but LightGBM provides a small, consistent edge and was therefore advanced as the primary candidate for final testing.
+
+## Confusion Matrix
+Table 6 reports performance for the final LightGBM on the held-out test set with the positive class = Retained. The model correctly identifies 44,251 retained customers (TP) and 9,968 churners (TN), with 3,944 churners misclassified as retained (FP) and 1,838 retained misclassified as churn (FN). This yields Accuracy 0.904, Precision 0.918, Recall 0.960 (for retained), Specificity 0.717 (for churn), and F1 0.939. Since the business priority is detecting churners, the operating threshold can be shifted to increase specificity at the expense of recall for retained.
+
+```{r}
+#| label: tbl-confusion-matrix-final
+#| tbl-cap: "Confusion matrix (test set, threshold = 0.5)"
+#| echo: false
+#| cache: false
+
+# 1) Ground truth (prefer the same 'test' used for predictions)
+have_truth <- FALSE
+if (exists("test") && is.data.frame(test) && "retained_binary" %in% names(test)) {
+  truth <- factor(ifelse(as.character(test$retained_binary) == "1", "Retained", "Churn"),
+                  levels = c("Churn","Retained"))
+  have_truth <- TRUE
+} else if (exists("truth_lab")) {
+  truth <- factor(truth_lab, levels = c("Churn","Retained"))
+  have_truth <- TRUE
+}
+
+if (!have_truth) {
+  knitr::kable(data.frame(Message = "No test ground-truth available; skipping confusion matrix."))
+} else {
+
+  # 2) Choose one set of probabilities in priority order
+  pred_prob <- NULL
+  model_name <- NULL
+  if (exists("prob_lgbm_final")) {
+    pred_prob <- as.numeric(prob_lgbm_final); model_name <- "LightGBM (final test)"
+  } else if (exists("prob_rf_final")) {
+    pred_prob <- as.numeric(prob_rf_final);   model_name <- "Random Forest (final test)"
+  } else if (exists("prob_rf")) {
+    pred_prob <- as.numeric(prob_rf);         model_name <- "Random Forest (untuned test)"
+  } else if (exists("prob_logit")) {
+    pred_prob <- as.numeric(prob_logit);      model_name <- "Logistic Regression (test)"
+  } else if (exists("prob_tree")) {
+    pred_prob <- as.numeric(prob_tree);       model_name <- "Decision Tree (test)"
+  }
+
+  if (is.null(pred_prob)) {
+    knitr::kable(data.frame(Message = "No test-set predictions available; skipping confusion matrix."))
+  } else if (length(pred_prob) != length(truth)) {
+    knitr::kable(data.frame(
+      Message = sprintf("Predictions length (%d) doesn't match ground-truth (%d).",
+                        length(pred_prob), length(truth))
+    ))
+  } else {
+
+    # 3) Build the confusion matrix at threshold = 0.5
+    pred_lab <- factor(ifelse(pred_prob >= 0.5, "Retained", "Churn"),
+                       levels = levels(truth))
+    tab <- table(Predicted = pred_lab, Actual = truth)
+    tab <- tab[c("Churn","Retained"), c("Churn","Retained")]  # ensure full 2x2
+
+    TN <- as.numeric(tab["Churn","Churn"])
+    FP <- as.numeric(tab["Retained","Churn"])
+    FN <- as.numeric(tab["Churn","Retained"])
+    TP <- as.numeric(tab["Retained","Retained"])
+
+    acc  <- (TP + TN) / sum(tab)
+    prec <- if ((TP + FP) == 0) NA_real_ else TP / (TP + FP)
+    rec  <- if ((TP + FN) == 0) NA_real_ else TP / (TP + FN)
+    spec <- if ((TN + FP) == 0) NA_real_ else TN / (TN + FP)
+    f1   <- if (is.na(prec) || is.na(rec) || (prec + rec) == 0) NA_real_ else 2 * prec * rec / (prec + rec)
+
+    out <- data.frame(
+      Model = model_name,
+      TN = TN, FP = FP, FN = FN, TP = TP,
+      Accuracy = round(acc, 3),
+      Precision = round(prec, 3),
+      Recall = round(rec, 3),
+      Specificity = round(spec, 3),
+      F1 = round(f1, 3),
+      check.names = FALSE
+    )
+
+    knitr::kable(out, align = c("l","r","r","r","r","r","r","r","r","r"))
+  }
+}
+
+```
+
+## Model Performance
+Table 7 confirms the ranking on out-of-sample data. LightGBM achieves the highest AUC (0.942) and Accuracy (0.904), with strong Precision (0.918) and the best Specificity (0.717) among the models. Random Forest is close behind (AUC 0.929–0.930), Logistic Regression performs competitively (AUC 0.926) with the advantage of interpretability, and the Decision Tree lags (AUC 0.799). All top models show high Recall (~0.96), indicating strong identification of the positive class at the default threshold.
+
+Figure 6 shows all models have good discrimination. LightGBM’s ROC curve dominates (closest to the top-left), consistent with its highest AUC in Table 7. Random Forest and Logistic Regression are slightly lower and broadly similar to each other, while the Decision Tree underperforms.
+
+```{r}
+#| label: tbl-test-summary
+#| cache: true
+#| tbl-cap: "*Final test-set performance (held-out set).*"
+
+# Helpers -------------------------------------------------------------
+safe_auc <- function(roc_obj) {
+  tryCatch({
+    a <- as.numeric(roc_obj$auc)
+    if (length(a) == 0 || !is.finite(a)) NA_real_ else a
+  }, error = function(e) NA_real_)
+}
+safe_metrics <- function(prob, truth, thr = 0.5) {
+  if (is.null(prob) || is.null(truth)) return(NULL)
+  y <- as.character(truth)
+  pred <- ifelse(as.numeric(prob) >= thr, "1", "0")
+  lv <- c("0","1")
+  tab <- table(factor(pred, levels = lv), factor(y, levels = lv))
+  TN <- as.numeric(tab["0","0"]); FP <- as.numeric(tab["1","0"])
+  FN <- as.numeric(tab["0","1"]); TP <- as.numeric(tab["1","1"])
+  TN[is.na(TN)] <- 0; FP[is.na(FP)] <- 0; FN[is.na(FN)] <- 0; TP[is.na(TP)] <- 0
+  acc  <- (TP + TN) / pmax(1, TP + TN + FP + FN)
+  prec <- if ((TP + FP) == 0) NA_real_ else TP / (TP + FP)
+  rec  <- if ((TP + FN) == 0) NA_real_ else TP / (TP + FN)
+  spec <- if ((TN + FP) == 0) NA_real_ else TN / (TN + FP)
+  f1   <- if (is.na(prec) || is.na(rec) || (prec + rec) == 0) NA_real_ else 2 * prec * rec / (prec + rec)
+  tibble::tibble(Accuracy = acc, Precision = prec, Recall = rec, Specificity = spec, F1 = f1)
+}
+
+# Ground truth
+truth <- if (exists("test") && "retained_binary" %in% names(test)) test$retained_binary else NULL
+
+# Collect test AUC rows ----------------------------------------------
+test_rows <- list()
+if (exists("roc_logit"))       test_rows$logit     <- tibble::tibble(Model = "Logistic Regression (test)", AUC = safe_auc(roc_logit))
+if (exists("roc_tree"))        test_rows$tree      <- tibble::tibble(Model = "Decision Tree (test)",         AUC = safe_auc(roc_tree))
+if (exists("roc_rf"))          test_rows$rf        <- tibble::tibble(Model = "Random Forest (test, untuned)", AUC = safe_auc(roc_rf))
+if (exists("roc_rf_final"))    test_rows$rf_final  <- tibble::tibble(Model = "Random Forest (final test)",    AUC = safe_auc(roc_rf_final))
+if (exists("roc_lgbm_final"))  test_rows$lgb_final <- tibble::tibble(Model = "LightGBM (final test)",         AUC = safe_auc(roc_lgbm_final))
+
+# Build per-model test metrics (must match names above) ---------------
+cm_rows <- list()
+if (exists("prob_logit"))       cm_rows$logit     <- safe_metrics(prob_logit, truth)      |> dplyr::mutate(Model = "Logistic Regression (test)")
+if (exists("prob_tree"))        cm_rows$tree      <- safe_metrics(prob_tree, truth)       |> dplyr::mutate(Model = "Decision Tree (test)")
+if (exists("prob_rf"))          cm_rows$rf        <- safe_metrics(prob_rf, truth)         |> dplyr::mutate(Model = "Random Forest (test, untuned)")
+if (exists("prob_rf_final"))    cm_rows$rf_final  <- safe_metrics(prob_rf_final, truth)   |> dplyr::mutate(Model = "Random Forest (final test)")
+if (exists("prob_lgbm_final"))  cm_rows$lgb_final <- safe_metrics(prob_lgbm_final, truth) |> dplyr::mutate(Model = "LightGBM (final test)")
+cm_all <- if (length(cm_rows)) dplyr::bind_rows(cm_rows) else NULL
+
+# Join AUC + metrics, test models only -------------------------------
+if (!length(test_rows)) {
+  knitr::kable(data.frame(Message = "No test results available."), align = "l")
+} else {
+  test_perf <- dplyr::bind_rows(test_rows) |>
+    dplyr::arrange(dplyr::desc(AUC))
+  if (!is.null(cm_all)) {
+    test_perf <- dplyr::left_join(test_perf, cm_all, by = "Model")
+  }
+  num_cols <- names(test_perf)[sapply(test_perf, is.numeric)]
+  test_perf[num_cols] <- lapply(test_perf[num_cols], function(x) round(x, 3))
+  knitr::kable(test_perf, align = c("l", rep("r", ncol(test_perf)-1)))
+}
+```
+
+Both logistic regression and random forest achieved strong
+discriminatory power, outperforming the decision tree
+
+```{r}
+#| label: fig-roc-ggplot
+#| fig-cap: "*ROC curves (test set): Logistic, Decision Tree, Random Forest, LightGBM.*"
+
+roc_list <- list(
+  "Logistic Regression" = roc_logit,
+  "Decision Tree"       = roc_tree,
+  "Random Forest"       = roc_rf
+)
+if (exists("roc_lgbm_final")) roc_list[["LightGBM"]] <- roc_lgbm_final
+
+# Build the ggplot directly from pROC
+p <- pROC::ggroc(roc_list, legacy.axes = TRUE) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed",
+              linewidth = 0.4, color = pal$grey3) +
+  scale_color_models() +
+  coord_equal() +
+  labs(x = "False Positive Rate (1 - Specificity)",
+       y = "True Positive Rate (Sensitivity)",
+       color = NULL) +
+  theme_apa()
+
+p
+```
+
+```{r}
+#| label: fig-5-importance
+#| fig-cap: "*Random Forest: top variable importance.*"
+if (is.null(mod_rf$importance)) {
+  plot.new(); title("RF importance unavailable")
+} else {
+  imp_df <- as.data.frame(importance(mod_rf)) |>
+    tibble::rownames_to_column("Variable") |>
+    arrange(desc(MeanDecreaseGini)) |>
+    head(10)
+  ggplot(imp_df, aes(x = reorder(Variable, MeanDecreaseGini), y = MeanDecreaseGini)) +
+    geom_col(fill = pal$blue) +
+    coord_flip() +
+    labs(x = NULL, y = "Mean Decrease Gini") +
+    theme_apa()
+}
+
+```
+
+Figure 7 indicates that engagement and spend features dominate importance in the Random Forest: num_purchases and activity_per_week rank highest, followed by discounted_rate_last_purchase and satisfaction_survey. Demographic and tenure signals (age, location, weeks_since_signup) also contribute, with discount_dependency and low_satisfaction_flag providing additional lift. Note that Gini importance reflects relative contribution, not direction; directional effects align with EDA (e.g., higher purchases/tenure associate with higher retention).
+
+## Conclusions
+Based on our initial observation, Higher churn is linked to low satisfaction scores, lower engagement/purchase activity, and specific regions (e.g., West Coast, Marlborough, Nelson, with Canterbury elevated).
+Retention is strongest for ages 26+, while <25 shows the weakest retention.
+
+### Comparative Model Performance
+Cross-validation results (Table 5) show LightGBM achieved the highest AUC, confirming superior discrimination over Random Forest and Logistic Regression. On the test set (Table 7), LightGBM led with AUC 0.942 and accuracy 0.904. Its recall of 0.96 aligns with PlatefulNZ’s priority of capturing churn risk, though at the cost of lower specificity (0.717). Random Forest (AUC 0.929) and Logistic Regression (0.926) remain strong alternatives, with Logistic Regression valued for interpretability. The Decision Tree lagged (AUC 0.799). ROC curves (Figure 6) confirm LightGBM’s dominance, making it best for deployment, with Logistic Regression as a transparent benchmark.
+
+## Recommendations
+
+### 1. Use LightGBM to Predict Customer Churn
+Our analysis shows that LightGBM is the most accurate model, with an AUC of 0.942 and accuracy of 0.904. This means it can identify customers who are likely to leave more reliably than other models. We recommend integrating LightGBM into PlatefulNZ’s customer management system so that each customer can be given a churn-risk score. Managers can then act early to retain customers. A simpler model, Logistic Regression, should also be kept as a reference because it explains clearly which factors lead to churn, making it useful for decision-making.
+
+### 2. Focus Interventions on Key Risk Factors
+Certain signals strongly indicate churn. We recommend that PlatefulNZ design interventions around these:
+
+1. Low satisfaction: Contact customers who give poor ratings quickly (within 48 hours) with service recovery, personalised recipe swaps, or offers.
+
+2. Payment problems: Reach out after failed payments with reminders, flexible grace periods, and easy ways to update card details.
+
+3. Low usage: Encourage inactive customers through personalised re-engagement campaigns, such as chef tips, quick-prep menu options, or loyalty nudges.
+
+4. Young customers (<25 years): Create affordable and flexible student/young professional plans, supported by onboarding campaigns that build consistent usage habits.
+
+5. High-churn regions (e.g., West Coast, Nelson, Marlborough): Check delivery reliability and adapt menus or promotions to suit local preferences.
+
+Targeting these high-risk groups will make retention efforts more effective and cost-efficient.
+
+### 3. Strengthen Engagement and Loyalty
+Beyond addressing churn risk, PlatefulNZ should also invest in building stronger customer loyalty:
+
+1. Chef-led experiences: Run short live cook-along events with Sage Cooke, including surprise ingredient add-ons for participants.
+
+2. Referral innovation: Replace standard discounts with creative perks, such as exclusive chef masterclass invitations (“Golden Ticket Referrals”), to increase word-of-mouth.
+
+3. Digital engagement: Send more personalised app notifications, emails, and social media interactions to keep customers connected and valued.
+
+### Strategic Value
+By combining predictive modelling with targeted and creative retention strategies, PlatefulNZ can reduce churn, protect revenues, and strengthen its market position. LightGBM ensures that interventions are directed at the right customers, while innovative engagement activities help the brand build long-term loyalty in a competitive meal-kit industry.
