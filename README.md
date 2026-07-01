@@ -50,7 +50,8 @@ Each project folder contains a `README.md`, the code (`.py` / `.R` / `.ipynb` / 
 | **[Power BI Data Storytelling (OECD)](projects/powerbi-oecd-storytelling)** | Tell an ethical, data-driven story across countries | Power Query, DAX, ethical viz | Power BI |
 | **[COVID Vaccination Impact](projects/covid-vaccination-python)** | Did earlier vaccination speed recovery? | Dataset integration, EDA | Python, pandas |
 | **[Project Schedule Evaluation — PredictNow](projects/project-schedule-evaluation)** | Can an AI tool launch before Black Friday? | Critical-path scheduling, resource levelling | ProjectLibre |
-
+| **[Machine Learning Models (Python)](projects/ml-models-python)** | Predict loan interest rates & house prices; estimate risk | Tree-based regression, decision trees, Monte Carlo simulation | Python, scikit-learn |
+| **[PlatefulNZ Analysis & Poster](projects/platefulnz-poster)** | Turn PlatefulNZ data into insights for a business audience | Statistical analysis, data viz, poster | R, Quarto |
 ---
 
 ## Skills demonstrated
