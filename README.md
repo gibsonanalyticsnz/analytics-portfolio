@@ -47,7 +47,6 @@ Each project folder contains a `README.md`, the code (`.py` / `.R` / `.ipynb` / 
 | **[E-Commerce Delivery Time](projects/ecommerce-delivery-regression)** | Predict actual delivery time for service planning | Multiple linear regression | R, tidyverse |
 | **[Loan Decision Prediction](projects/loan-decision-logistic)** | Which customers accept a personal loan? | Logistic regression | R |
 | **[FinTech Investment Appraisal — RosterLab](projects/fintech-investment-appraisal)** | Does a NZ$10M expansion create value? | CAPM, beta, DCF/NPV, sensitivity analysis | Excel, R/Python |
-| **[Power BI Data Storytelling (OECD)](projects/powerbi-oecd-storytelling)** | Tell an ethical, data-driven story across countries | Power Query, DAX, ethical viz | Power BI |
 | **[COVID Vaccination Impact](projects/covid-vaccination-python)** | Did earlier vaccination speed recovery? | Dataset integration, EDA | Python, pandas |
 | **[Project Schedule Evaluation — PredictNow](projects/project-schedule-evaluation)** | Can an AI tool launch before Black Friday? | Critical-path scheduling, resource levelling | ProjectLibre |
 | **[Machine Learning Models (Python)](projects/ml-models-python)** | Predict loan interest rates & house prices; estimate risk | Tree-based regression, decision trees, Monte Carlo simulation | Python, scikit-learn |
